@@ -1,5 +1,5 @@
 import {
-  App, Editor, FuzzySuggestModal, Modal, Notice, Plugin, PluginSettingTab, Setting,
+  App, Editor, FuzzySuggestModal, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting,
   TFile, TFolder, getAllTags, getLanguage, requestUrl,
 } from "obsidian";
 
@@ -114,15 +114,22 @@ export default class NoteWise extends Plugin {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData() as Partial<Settings>);
     this.addSettingTab(new NoteWiseSettingTab(this.app, this));
 
-    this.addCommand({ id: "ask-ai", name: t.askAI, editorCallback: (e) => this.askAI(e) });
-    this.addCommand({ id: "ask-vault", name: t.askVault, callback: () => this.run(() => this.askVault()) });
-    this.addCommand({ id: "summarize", name: t.summarize, callback: () => this.run(() => this.summarize()) });
-    this.addCommand({ id: "tag", name: t.tag, callback: () => this.run(() => this.autoTag()) });
-    this.addCommand({ id: "file", name: t.file, callback: () => this.run(() => this.suggestFolder()) });
-    this.addCommand({ id: "link", name: t.link, callback: () => this.run(() => this.suggestLinks()) });
+    this.addCommand({ id: "ask-ai", name: t.askAI, icon: "sparkles", editorCallback: (e) => this.askAI(e) });
+    this.addCommand({ id: "ask-vault", name: t.askVault, icon: "message-circle-question", callback: () => this.run(() => this.askVault()) });
+    this.addCommand({ id: "summarize", name: t.summarize, icon: "file-text", callback: () => this.run(() => this.summarize()) });
+    this.addCommand({ id: "tag", name: t.tag, icon: "tags", callback: () => this.run(() => this.autoTag()) });
+    this.addCommand({ id: "file", name: t.file, icon: "folder-input", callback: () => this.run(() => this.suggestFolder()) });
+    this.addCommand({ id: "link", name: t.link, icon: "link", callback: () => this.run(() => this.suggestLinks()) });
     this.addRibbonIcon("sparkles", t.askVault, () => this.run(() => this.askVault()));
     this.registerEvent(this.app.workspace.on("editor-menu", (menu, editor) => {
       menu.addItem((i) => i.setTitle(t.askAI).setIcon("sparkles").onClick(() => this.askAI(editor)));
+    }));
+    // 安卓长按弹的是系统文字菜单，不是 editor-menu；手机上从右上角 ⋮ 菜单进入
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, _file, _source, leaf) => {
+      const view = leaf?.view ?? this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!(view instanceof MarkdownView) || view.getMode() !== "source") return;
+      menu.addItem((i) => i.setTitle(t.askAI).setIcon("sparkles").setSection("action")
+        .onClick(() => this.askAI(view.editor)));
     }));
   }
 
@@ -203,19 +210,21 @@ export default class NoteWise extends Plugin {
   }
 
   askAI(editor: Editor) {
+    // 先记下选区：手机上弹出面板/键盘时编辑器会失焦，之后再读选区可能已经丢了
+    const from = editor.getCursor("from");
+    const end = editor.getCursor("to");
+    const selection = editor.getSelection();
     new ActionPicker(this.app, async (action) => {
       const extra = action.ask ? await prompt(this.app, t.actions[action.id], action.ask) : "";
       if (action.ask && !extra) return;
-      const selection = editor.getSelection();
       const max = this.settings.maxChars;
       const text = action.context
-        ? editor.getRange({ line: 0, ch: 0 }, editor.getCursor("to")).slice(-max)
+        ? editor.getRange({ line: 0, ch: 0 }, end).slice(-max)
         : (selection || editor.getValue()).slice(0, max);
       const user = action.id === "draft"
         ? `${extra}\n\nContext (current note, may be empty):\n${editor.getValue().slice(0, max)}`
         : `${extra ? `Instruction: ${extra}\n\n` : ""}Text:\n${text}`;
       const insertBelow = (out: string) => {
-        const end = editor.getCursor("to");
         const line = editor.getLine(end.line);
         // 续写直接接在光标处，其余结果另起一段
         if (action.context) editor.replaceRange(out, end);
@@ -223,7 +232,7 @@ export default class NoteWise extends Plugin {
       };
       const buttons: Button[] = [{ label: t.insert, cta: !selection || !!action.context, onClick: insertBelow }];
       if (selection && !action.context) {
-        buttons.unshift({ label: t.replace, cta: true, onClick: (out) => editor.replaceSelection(out) });
+        buttons.unshift({ label: t.replace, cta: true, onClick: (out) => editor.replaceRange(out, from, end) });
       }
       new ResultModal(this, t.actions[action.id], [
         { role: "system", content: action.prompt },
@@ -369,13 +378,17 @@ class ResultModal extends Modal {
     this.titleEl.setText(this.title);
     this.modalEl.addClass("notewise-modal");
     this.output = this.contentEl.createEl("textarea", { cls: "notewise-output", attr: { rows: "12" } });
-    const follow = this.contentEl.createEl("input", { cls: "notewise-follow", attr: { type: "text", placeholder: t.followPh } });
-    follow.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" || e.isComposing || !follow.value.trim()) return;
+    const row = this.contentEl.createDiv({ cls: "notewise-follow" });
+    const follow = row.createEl("input", { attr: { type: "text", placeholder: t.followPh, enterkeyhint: "send" } });
+    const send = () => {
+      if (!follow.value.trim()) return;
       this.messages.push({ role: "assistant", content: this.output.value }, { role: "user", content: follow.value.trim() });
       follow.value = "";
       void this.generate();
-    });
+    };
+    follow.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) send(); });
+    // 手机键盘不一定有回车，给个按钮
+    row.createEl("button", { text: t.send }).addEventListener("click", send);
     const bar = new Setting(this.contentEl);
     for (const b of this.buttons) {
       bar.addButton((btn) => {

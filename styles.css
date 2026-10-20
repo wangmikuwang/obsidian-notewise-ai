@@ -1,5 +1,12 @@
 .notewise-modal { width: min(720px, 92vw); }
-.notewise-output, .notewise-input, .notewise-follow { width: 100%; }
+.notewise-output, .notewise-input { width: 100%; }
 .notewise-output { min-height: 240px; font-family: var(--font-text); resize: vertical; }
-.notewise-follow { margin-top: var(--size-4-2); }
+.notewise-follow { display: flex; gap: var(--size-4-2); margin-top: var(--size-4-2); }
+.notewise-follow input { flex: 1; min-width: 0; }
+.notewise-modal .setting-item-control { flex-wrap: wrap; justify-content: flex-end; }
 .notewise-pre { white-space: pre-wrap; }
+
+/* 手机：面板铺满宽度，输出框给键盘留空间 */
+.is-phone .notewise-modal { width: 100vw; }
+.is-phone .notewise-output { min-height: 30vh; max-height: 45vh; }
+.is-phone .notewise-modal .setting-item-control button { flex: 1 1 40%; }
