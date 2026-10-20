@@ -51,6 +51,8 @@ pnpm test    # offline self-check
 DEEPSEEK_API_KEY=sk-... pnpm live   # real API test
 ```
 
+Release: bump `version` in `manifest.json`, `package.json` and `versions.json`, then push an annotated tag with the same version (no `v`). GitHub Actions builds, checks, attests (`gh attestation verify main.js -R wangmikuwang/obsidian-notewise-ai`) and publishes the release.
+
 ---
 
 ## 中文说明

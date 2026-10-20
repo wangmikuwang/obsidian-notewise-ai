@@ -1,6 +1,6 @@
 {
   "name": "notewise-ai",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && esbuild main.ts --bundle --format=cjs --target=es2020 --external:obsidian --outfile=main.js",
@@ -17,5 +17,6 @@
     "obsidian": "^1.14.4",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.2"
-  }
+  },
+  "packageManager": "pnpm@12.11.2"
 }
