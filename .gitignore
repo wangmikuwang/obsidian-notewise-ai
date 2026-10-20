@@ -1,0 +1,4 @@
+node_modules/
+!test/node_modules/
+main.js
+test/main.js

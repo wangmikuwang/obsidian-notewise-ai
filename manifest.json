@@ -1,0 +1,9 @@
+{
+  "id": "ai-notes",
+  "name": "AI Notes",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "接入 AI（OpenAI 兼容接口）来总结、打标签、归档、关联和问答你的笔记。",
+  "author": "卿云",
+  "isDesktopOnly": false
+}

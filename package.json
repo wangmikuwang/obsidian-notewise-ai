@@ -1,0 +1,14 @@
+{
+  "name": "obsidian-ai-notes",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc --noEmit && esbuild main.ts --bundle --format=cjs --target=es2020 --external:obsidian --outfile=main.js",
+    "test": "cp main.js test/ && node test/check.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.14.4",
+    "typescript": "^7.0.2"
+  }
+}
