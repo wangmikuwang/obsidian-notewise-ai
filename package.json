@@ -1,14 +1,21 @@
 {
-  "name": "obsidian-ai-notes",
-  "version": "0.1.0",
+  "name": "notewise-ai",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && esbuild main.ts --bundle --format=cjs --target=es2020 --external:obsidian --outfile=main.js",
-    "test": "cp main.js test/ && node test/check.cjs"
+    "test": "cp main.js test/ && node test/check.cjs",
+    "lint": "eslint main.ts",
+    "live": "cp main.js test/ && node test/live.cjs"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "esbuild": "^0.28.2",
+    "eslint": "^10.13.0",
+    "eslint-plugin-obsidianmd": "^0.4.2",
+    "globals": "^17.13.0",
     "obsidian": "^1.14.4",
-    "typescript": "^7.0.2"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.2"
   }
 }

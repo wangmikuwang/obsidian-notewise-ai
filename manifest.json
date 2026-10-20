@@ -1,9 +1,10 @@
 {
-  "id": "ai-notes",
-  "name": "AI Notes",
-  "version": "0.1.0",
-  "minAppVersion": "1.4.0",
-  "description": "接入 AI（OpenAI 兼容接口）来总结、打标签、归档、关联和问答你的笔记。",
-  "author": "卿云",
+  "id": "notewise-ai",
+  "name": "NoteWise AI",
+  "version": "1.0.0",
+  "minAppVersion": "1.8.7",
+  "description": "AI writing assistant and note manager with DeepSeek or any OpenAI-compatible API: rewrite, continue, translate, summarize, auto-tag, file, link and ask your vault.",
+  "author": "wangmikuwang",
+  "authorUrl": "https://github.com/wangmikuwang",
   "isDesktopOnly": false
 }
