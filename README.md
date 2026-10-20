@@ -17,6 +17,8 @@ An AI writing assistant and note manager for Obsidian, inspired by Notion AI. Wo
 
 Works on the selection, or the whole note when nothing is selected.
 
+**On mobile (Android / iOS)**: open **Ask AI** from the note’s ⋮ menu (top right), since long-press opens the system text menu there. You can also add "Ask AI" to the mobile toolbar in Settings → Toolbar.
+
 **Note management**
 
 - **Ask your vault** — finds relevant notes and answers with `[[links]]`; save the answer as a note.
@@ -56,6 +58,8 @@ DEEPSEEK_API_KEY=sk-... pnpm live   # real API test
 参考 Notion AI 的 Obsidian AI 插件，默认接入 **DeepSeek**，也支持任何 OpenAI 兼容接口（通义千问、Kimi、OpenAI、Ollama 等）。
 
 **问 AI**：编辑器里右键 →「问 AI」，或命令面板运行。结果流式显示，可以手动修改、继续追问、重试，再选择替换选中内容或插入到下方。动作包括：续写、改进写作、修正拼写语法、缩短/扩写、简化、改语气、中/英/日翻译、总结、提取待办、解释、大纲、头脑风暴、AI 起草、自定义指令。没选中文字时作用于整篇笔记。
+
+**手机（安卓 / iOS）**：在笔记右上角 ⋮ 菜单里点「问 AI」（手机上长按弹的是系统菜单）；也可以在 设置 → 工具栏 里把「问 AI」加到编辑工具栏。
 
 **笔记管理**：向知识库提问（带 `[[链接]]` 引用，可存成笔记）、总结写入 `summary` 属性、自动打标签（优先复用已有标签）、建议归档文件夹（确认后移动，自动更新链接）、推荐相关笔记链接。
 
