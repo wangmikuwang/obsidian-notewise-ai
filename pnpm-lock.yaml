@@ -181,6 +181,9 @@ importers:
       globals:
         specifier: ^17.13.0
         version: 17.13.0
+      moment:
+        specifier: 2.30.1
+        version: 2.30.1
       obsidian:
         specifier: ^1.14.4
         version: 1.14.4(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)
@@ -1207,6 +1210,9 @@ packages:
 
   module-replacements@2.11.0:
     resolution: {integrity: sha512-j5sNQm3VCpQQ7nTqGeOZtoJtV3uKERgCBm9QRhmGRiXiqkf7iRFOkfxdJRZWLkqYY8PNf4cDQF/WfXUYLENrRA==}
+
+  moment@2.30.1:
+    resolution: {integrity: sha512-uEmtNhbDOrWPFS+hdjFCBfy9f2YoyzRpwcl+DqpC6taX21FzsTLQVbMV/W7PzNSX6x/bhC1zA3c2UQ5NzH6how==}
 
   moment@2.31.0:
     resolution: {integrity: sha512-0acOTfMiWOheYS4eoWb80yYMb/JLvVv9SHbs2PehaDzfUG0Bw855SKyk0IKTnPGa5+U2bmi3W68l1+sGLX/pvw==}
@@ -2815,6 +2821,8 @@ snapshots:
   minimist@1.2.8: {}
 
   module-replacements@2.11.0: {}
+
+  moment@2.30.1: {}
 
   moment@2.31.0: {}
 

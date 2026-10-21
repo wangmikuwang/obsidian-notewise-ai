@@ -1,7 +1,11 @@
 import {
   App, Editor, FuzzySuggestModal, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting,
-  TFile, TFolder, getAllTags, getLanguage, requestUrl,
+  TFile, TFolder, getAllTags, getLanguage, moment, normalizePath, requestUrl,
 } from "obsidian";
+import type { Moment } from "moment";
+
+// TS 6 下 obsidian 导出的 moment 类型不可调用，补上用到的签名
+const day = moment as unknown as (inp?: string, format?: string, strict?: boolean) => Moment;
 
 interface Settings {
   baseUrl: string;
@@ -37,13 +41,17 @@ const en = {
   apiKeyDesc: "Stored locally in this vault's plugin data", model: "Model", modelDesc: "e.g. deepseek-flash, deepseek-v4-pro, qwen-plus, gpt-4o-mini",
   maxChars: "Max characters per request", maxCharsDesc: "Upper limit of note content sent in one request",
   test: "Test connection", testBtn: "Test", testOk: "Connection OK: ",
+  quickLog: "Quick log with AI", quickLogPh: "e.g. fasting glucose 6.2, took morning meds, weight 94.0",
+  review: "Review the last 7 days", noTargets: "No log folders found. Set up Daily notes or Templater folder templates first",
+  nothingParsed: "Nothing to log was found", logTo: "Write these values?", logged: "Logged: ",
+  noRecent: "No notes from the last 7 days", dailyFail: "Daily note was not created", startReview: "Insert & review",
   actions: {
     continue: "Continue writing", improve: "Improve writing", grammar: "Fix spelling & grammar",
     shorter: "Make shorter", longer: "Make longer", simplify: "Simplify language",
     professional: "Change tone: professional", casual: "Change tone: casual", friendly: "Change tone: friendly",
     toZh: "Translate to Chinese", toEn: "Translate to English", toJa: "Translate to Japanese",
     summary: "Summarize", todo: "Find action items", explain: "Explain this", outline: "Make an outline",
-    brainstorm: "Brainstorm ideas", draft: "Draft with AI…", custom: "Custom instruction…",
+    brainstorm: "Brainstorm ideas", flashcards: "Make flashcards", draft: "Draft with AI…", custom: "Custom instruction…",
   },
 };
 
@@ -63,13 +71,17 @@ const zh: typeof en = {
   apiKeyDesc: "只保存在本库的插件数据里", model: "模型", modelDesc: "如 deepseek-flash、deepseek-v4-pro、qwen-plus、gpt-4o-mini",
   maxChars: "单次最多发送字符数", maxCharsDesc: "单次请求附带的笔记内容上限",
   test: "测试连接", testBtn: "测试", testOk: "连接成功：",
+  quickLog: "AI 快速记录", quickLogPh: "如：空腹 6.2，二甲双胍早上吃了，体重 94.0",
+  review: "AI 回顾最近 7 天", noTargets: "没找到记录文件夹，请先设置日记或 Templater 文件夹模板",
+  nothingParsed: "没识别出要记录的内容", logTo: "写入这些数据？", logged: "已记录：",
+  noRecent: "最近 7 天没有记录", dailyFail: "日记没有建出来", startReview: "插入并复习",
   actions: {
     continue: "续写", improve: "改进写作", grammar: "修正拼写和语法",
     shorter: "缩短", longer: "扩写", simplify: "简化语言",
     professional: "语气：专业", casual: "语气：随意", friendly: "语气：友好",
     toZh: "翻译成中文", toEn: "翻译成英文", toJa: "翻译成日文",
     summary: "总结", todo: "提取待办事项", explain: "解释", outline: "生成大纲",
-    brainstorm: "头脑风暴", draft: "AI 起草…", custom: "自定义指令…",
+    brainstorm: "头脑风暴", flashcards: "生成闪卡", draft: "AI 起草…", custom: "自定义指令…",
   },
 };
 
@@ -103,9 +115,28 @@ const ACTIONS: Action[] = [
   { id: "explain", prompt: "Explain this clearly and concisely, in the text's language." },
   { id: "outline", prompt: "Create a structured Markdown outline (headings and bullets), in the text's language." },
   { id: "brainstorm", prompt: "Brainstorm 8-10 diverse ideas related to this as a Markdown list, in the text's language." },
+  { id: "flashcards", prompt: "Turn the key facts into flashcards, one per line as `front{sep}back`, in the text's language. Put {tag} alone on the first line. Output only the cards." },
   { id: "draft", ask: t.draftPh, prompt: "Write what the user asks for in Markdown. Use the user's language. Output only the content." },
   { id: "custom", ask: t.customPh, prompt: "Follow the user's instruction on the text. Use Markdown. Output only the result." },
 ];
+
+// 其他插件和核心插件没有公开类型，这里只声明用到的部分
+interface Host {
+  plugins: { plugins: Record<string, {
+    settings?: { folder_templates?: { folder: string; template: string }[] };
+    templater?: {
+      create_new_note_from_template(tpl: TFile, folder: TFolder, name: string, open: boolean): Promise<TFile | undefined>;
+      files_with_pending_templates: Set<string>;
+    };
+    dataManager?: { data: { settings: { singleLineCardSeparator?: string; flashcardTags?: string[] } } };
+  } | undefined> };
+  internalPlugins: { getPluginById(id: string): { enabled: boolean; instance: { options: { folder?: string; format?: string; template?: string } } } | null };
+  commands: { executeCommandById(id: string): boolean };
+}
+
+// 记录目标：日记文件夹或 Templater 文件夹模板，字段取自模板的 frontmatter
+interface Target { folder: string; format: string; daily: boolean; template: TFile | null; fields: Record<string, unknown> }
+type Log = Record<string, Record<string, unknown>>;
 
 export default class NoteWise extends Plugin {
   settings!: Settings;
@@ -120,6 +151,8 @@ export default class NoteWise extends Plugin {
     this.addCommand({ id: "tag", name: t.tag, icon: "tags", callback: () => this.run(() => this.autoTag()) });
     this.addCommand({ id: "file", name: t.file, icon: "folder-input", callback: () => this.run(() => this.suggestFolder()) });
     this.addCommand({ id: "link", name: t.link, icon: "link", callback: () => this.run(() => this.suggestLinks()) });
+    this.addCommand({ id: "quick-log", name: t.quickLog, icon: "pencil-line", callback: () => this.run(() => this.quickLog()) });
+    this.addCommand({ id: "review", name: t.review, icon: "calendar-range", callback: () => this.run(() => this.review()) });
     this.addRibbonIcon("sparkles", t.askVault, () => this.run(() => this.askVault()));
     this.registerEvent(this.app.workspace.on("editor-menu", (menu, editor) => {
       menu.addItem((i) => i.setTitle(t.askAI).setIcon("sparkles").onClick(() => this.askAI(editor)));
@@ -209,6 +242,8 @@ export default class NoteWise extends Plugin {
     return (await this.app.vault.cachedRead(f)).slice(0, this.settings.maxChars);
   }
 
+  host() { return this.app as unknown as Host; }
+
   askAI(editor: Editor) {
     // 先记下选区：手机上弹出面板/键盘时编辑器会失焦，之后再读选区可能已经丢了
     const from = editor.getCursor("from");
@@ -234,8 +269,19 @@ export default class NoteWise extends Plugin {
       if (selection && !action.context) {
         buttons.unshift({ label: t.replace, cta: true, onClick: (out) => editor.replaceRange(out, from, end) });
       }
+      let system = action.prompt;
+      if (action.id === "flashcards") {
+        // 分隔符和标签跟随闪卡插件的设置，生成的卡片它才认得
+        const sr = this.host().plugins.plugins["obsidian-spaced-repetition"]?.dataManager?.data.settings;
+        system = system.replace("{sep}", sr?.singleLineCardSeparator ?? "::").replace("{tag}", sr?.flashcardTags?.[0] ?? "#flashcards");
+        if (sr) buttons.push({ label: t.startReview, onClick: async (out) => {
+          insertBelow(out);
+          await this.app.workspace.getActiveViewOfType(MarkdownView)?.save();
+          this.host().commands.executeCommandById("obsidian-spaced-repetition:srs-review-flashcards");
+        } });
+      }
       new ResultModal(this, t.actions[action.id], [
-        { role: "system", content: action.prompt },
+        { role: "system", content: system },
         { role: "user", content: user },
       ], buttons).open();
     }).open();
@@ -246,18 +292,119 @@ export default class NoteWise extends Plugin {
     if (!q) return;
     const docs = await this.search(q, 6);
     const ctx = docs.map((d) => `### [[${d.file.basename}]]\n${d.text}`).join("\n\n");
+    new ResultModal(this, q, [
+      { role: "system", content: "Answer the question using the provided notes. Cite notes as [[note name]]. Say clearly when the notes don't contain the answer. Answer in the question's language." },
+      { role: "user", content: `Notes:\n${ctx || "(no relevant notes found)"}\n\nQuestion: ${q}` },
+    ], this.answerButtons(t.qaTitle, `> ${q}`)).open();
+  }
+
+  answerButtons(title: string, header: string): Button[] {
     const editor = this.app.workspace.activeEditor?.editor;
     const buttons: Button[] = [{
       label: t.saveNote, cta: true, onClick: async (out) => {
-        const f = await this.app.vault.create(`${t.qaTitle} ${new Date().toLocaleString("sv").replace(/:/g, "")}.md`, `> ${q}\n\n${out}\n`);
+        const f = await this.createNote(`${title} ${new Date().toLocaleString("sv").replace(/:/g, "")}.md`, `${header}\n\n${out}\n`);
         await this.app.workspace.getLeaf(true).openFile(f);
       },
     }];
     if (editor) buttons.push({ label: t.insert, onClick: (out) => editor.replaceSelection(out) });
-    new ResultModal(this, q, [
-      { role: "system", content: "Answer the question using the provided notes. Cite notes as [[note name]]. Say clearly when the notes don't contain the answer. Answer in the question's language." },
-      { role: "user", content: `Notes:\n${ctx || "(no relevant notes found)"}\n\nQuestion: ${q}` },
-    ], buttons).open();
+    return buttons;
+  }
+
+  targets(): Target[] {
+    const h = this.host();
+    const out: Target[] = [];
+    const add = (folder: string, tpl: string | undefined, format: string, daily: boolean) => {
+      const template = tpl ? this.app.metadataCache.getFirstLinkpathDest(tpl, "") : null;
+      const fields = (template && this.app.metadataCache.getFileCache(template)?.frontmatter) ?? {};
+      if (Object.keys(fields).length) out.push({ folder: normalizePath(folder || "/"), format, daily, template, fields });
+    };
+    const daily = h.internalPlugins.getPluginById("daily-notes");
+    if (daily?.enabled) {
+      const o = daily.instance.options;
+      add(o.folder ?? "", o.template, o.format || "YYYY-MM-DD", true);
+    }
+    for (const p of h.plugins.plugins["templater-obsidian"]?.settings?.folder_templates ?? []) add(p.folder, p.template, "YYYY-MM-DD", false);
+    return out;
+  }
+
+  todayPath(x: Target) { return normalizePath(`${x.folder}/${day().format(x.format)}.md`); }
+
+  // 今天的笔记不存在就交给原插件新建，模板照常套上
+  async todayNote(x: Target): Promise<TFile> {
+    const path = this.todayPath(x);
+    const found = this.app.vault.getAbstractFileByPath(path);
+    if (found instanceof TFile) return found;
+    if (x.daily) {
+      // ponytail: 只等文件建好；日记模板若还要被 Templater 二次处理，可能和写属性抢先后
+      const created = new Promise<TFile>((resolve, reject) => {
+        const ref = this.app.vault.on("create", (f) => {
+          if (f.path === path && f instanceof TFile) { this.app.vault.offref(ref); resolve(f); }
+        });
+        window.setTimeout(() => { this.app.vault.offref(ref); reject(new Error(t.dailyFail)); }, 5000);
+      });
+      this.host().commands.executeCommandById("daily-notes");
+      return created;
+    }
+    if (!this.app.vault.getAbstractFileByPath(x.folder)) await this.app.vault.createFolder(x.folder);
+    const folder = this.app.vault.getAbstractFileByPath(x.folder);
+    const tp = this.host().plugins.plugins["templater-obsidian"]?.templater;
+    const f = tp && x.template && folder instanceof TFolder
+      ? await tp.create_new_note_from_template(x.template, folder, day().format(x.format), false) : undefined;
+    return f ?? this.app.vault.create(path, x.template ? await this.app.vault.read(x.template) : "");
+  }
+
+  // Templater 开了「新建文件时触发」会重新解析新文件，在安卓上会把内容清空；先登记成它的待处理文件，让它跳过
+  async createNote(path: string, content: string) {
+    const pending = this.host().plugins.plugins["templater-obsidian"]?.templater?.files_with_pending_templates;
+    pending?.add(path);
+    try {
+      return await this.app.vault.create(path, content);
+    } finally {
+      // ponytail: Templater 固定等 300ms 再检查，这里 1 秒后撤销登记；它改了延迟就要跟着调
+      window.setTimeout(() => pending?.delete(path), 1000);
+    }
+  }
+
+  async quickLog() {
+    const targets = this.targets();
+    if (!targets.length) throw new Error(t.noTargets);
+    const text = await prompt(this.app, t.quickLog, t.quickLogPh);
+    if (!text) return;
+    const schema = Object.fromEntries(targets.map((x) => [x.folder, x.fields]));
+    const reply = await this.chat([
+      { role: "system", content: 'Turn the user\'s log into note properties. The schema maps folder -> {field: template default}. Output only JSON {"folder": {"field": value}} with exact folder and field names, only for things the user clearly mentioned. Use true/false for fields whose default is a boolean, plain numbers for measurements, short text otherwise.' },
+      { role: "user", content: `Schema: ${JSON.stringify(schema)}\n\nLog: ${text}` },
+    ]);
+    const picked = pickLog(parseJSON<Log>(reply), targets);
+    if (!picked.length) return void new Notice(t.nothingParsed);
+    const preview = picked.map(({ target, values }) => `📁 ${this.todayPath(target)}\n` +
+      Object.entries(values).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join("\n")).join("\n\n");
+    if (!await confirm(this.app, `${t.logTo}\n\n${preview}`)) return;
+    for (const { target, values } of picked) {
+      const f = await this.todayNote(target);
+      await this.app.fileManager.processFrontMatter(f, (fm: Record<string, unknown>) => { Object.assign(fm, values); });
+    }
+    new Notice(t.logged + picked.flatMap((x) => Object.keys(x.values)).join(", "));
+  }
+
+  async review() {
+    const since = day().subtract(6, "days").startOf("day");
+    const parts: string[] = [];
+    for (const x of this.targets()) {
+      const dir = this.app.vault.getAbstractFileByPath(x.folder);
+      if (!(dir instanceof TFolder)) continue;
+      // ponytail: 只看文件夹第一层、按文件名认日期；日记格式带子目录（YYYY/MM/DD）时要改成递归
+      for (const f of dir.children) {
+        if (!(f instanceof TFile) || f.extension !== "md") continue;
+        const d = day(f.basename, x.format, true);
+        if (d.isValid() && !d.isBefore(since)) parts.push(`## ${f.path}\n${await this.app.vault.cachedRead(f)}`);
+      }
+    }
+    if (!parts.length) return void new Notice(t.noRecent);
+    new ResultModal(this, t.review, [
+      { role: "system", content: "Review the user's self-tracking notes from the last 7 days (daily check-ins and measurements). Write a short, warm review in the notes' language: trends in the numbers, habits kept or missed, notable moments, and 2-3 gentle suggestions for next week. Do not give medication or dosage advice; for anything medical, suggest asking their doctor." },
+      { role: "user", content: `Today: ${day().format("YYYY-MM-DD")}\n\n${parts.sort().join("\n\n").slice(-this.settings.maxChars)}` },
+    ], this.answerButtons(t.review, `# ${t.review}`)).open();
   }
 
   async summarize() {
@@ -350,6 +497,18 @@ export function parseJSON<T>(s: string): T {
   const m = s.match(/[[{][\s\S]*[\]}]/);
   if (!m) throw new Error(t.noJSON + s.slice(0, 100));
   return JSON.parse(m[0]) as T;
+}
+
+// 只保留目标里存在的文件夹和字段；模板默认值是布尔的字段转成 true/false
+export function pickLog<T extends { folder: string; fields: Record<string, unknown> }>(reply: Log, targets: T[]) {
+  return targets.map((target) => {
+    const values: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(reply[target.folder] ?? {})) {
+      if (!(k in target.fields) || v === null || v === "") continue;
+      values[k] = typeof target.fields[k] === "boolean" ? v === true || v === "true" : v;
+    }
+    return { target, values };
+  }).filter((x) => Object.keys(x.values).length);
 }
 
 class ActionPicker extends FuzzySuggestModal<Action> {
