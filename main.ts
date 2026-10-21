@@ -1,6 +1,7 @@
 import {
-  App, Editor, FuzzySuggestModal, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting,
-  TFile, TFolder, getAllTags, getLanguage, moment, normalizePath, requestUrl,
+  App, BasesEntry, BasesView, Command, Editor, FuzzySuggestModal, ItemView, MarkdownView, Menu, Modal, Notice, Platform,
+  Plugin, PluginSettingTab, QueryController, Setting, TFile, TFolder, TextAreaComponent, WorkspaceLeaf, debounce, getAllTags, getLanguage, moment,
+  normalizePath, parsePropertyId, requestUrl, setIcon,
 } from "obsidian";
 import type { Moment } from "moment";
 
@@ -12,14 +13,12 @@ interface Settings {
   apiKey: string;
   model: string;
   maxChars: number;
+  homepage: string;
+  // 每行「命令 id | 图标 | 名称」
+  buttons: string;
+  // 每行「文件夹路径 = emoji」
+  folderIcons: string;
 }
-
-const DEFAULTS: Settings = {
-  baseUrl: "https://api.deepseek.com",
-  apiKey: "",
-  model: "deepseek-flash",
-  maxChars: 12000,
-};
 
 type Msg = { role: "system" | "user" | "assistant"; content: string };
 type ChatResponse = { choices: { message: { content: string } }[] };
@@ -45,6 +44,16 @@ const en = {
   review: "Review the last 7 days", noTargets: "No log folders found. Set up Daily notes or Templater folder templates first",
   nothingParsed: "Nothing to log was found", logTo: "Write these values?", logged: "Logged: ",
   noRecent: "No notes from the last 7 days", dailyFail: "Daily note was not created", startReview: "Insert & review",
+  openHome: "Open homepage", noHome: "Set a homepage note in NoteWise settings first", today: "Today", home: "Home",
+  moveUp: "Move list item up", moveDown: "Move list item down", formatTable: "Format table", insertRow: "Insert table row",
+  notInTable: "Cursor is not in a table", spaceCJK: "Add spaces between Chinese and English",
+  calendar: "Calendar", openCalendar: "Open calendar", createDaily: "Create daily note ",
+  kanban: "Kanban", kanbanColumn: "Column property", kanbanColumns: "Columns (comma-separated)",
+  kanbanNone: "(none)", moveCardTo: "Move to", newCard: "New card", kanbanNeedProp: "Pick a note property for the columns in the view options",
+  colDefault: "To do, Doing, Done", statusProp: "status",
+  workflow: "Workflow", homepage: "Homepage", homepageDesc: "Note opened on startup and by the Home button, e.g. Home. Empty = off",
+  buttons: "Header buttons", buttonsDesc: "Shown at the top of every page. One per line: command id | icon | name",
+  addButton: "Add command", folderIcons: "Folder icons", folderIconsDesc: "One per line: folder path = emoji. For notes, set an icon property (emoji) instead.",
   actions: {
     continue: "Continue writing", improve: "Improve writing", grammar: "Fix spelling & grammar",
     shorter: "Make shorter", longer: "Make longer", simplify: "Simplify language",
@@ -75,6 +84,16 @@ const zh: typeof en = {
   review: "AI 回顾最近 7 天", noTargets: "没找到记录文件夹，请先设置日记或 Templater 文件夹模板",
   nothingParsed: "没识别出要记录的内容", logTo: "写入这些数据？", logged: "已记录：",
   noRecent: "最近 7 天没有记录", dailyFail: "日记没有建出来", startReview: "插入并复习",
+  openHome: "打开主页", noHome: "请先在 NoteWise 设置里填写主页笔记", today: "今天", home: "主页",
+  moveUp: "列表项上移", moveDown: "列表项下移", formatTable: "格式化表格", insertRow: "表格插入一行",
+  notInTable: "光标不在表格里", spaceCJK: "中英文之间加空格",
+  calendar: "日历", openCalendar: "打开日历", createDaily: "新建日记 ",
+  kanban: "看板", kanbanColumn: "分列属性", kanbanColumns: "列（逗号分隔）",
+  kanbanNone: "（未设置）", moveCardTo: "移到", newCard: "新卡片", kanbanNeedProp: "请在视图选项里选一个笔记属性作为分列依据",
+  colDefault: "待办, 进行中, 已完成", statusProp: "状态",
+  workflow: "工作流", homepage: "主页", homepageDesc: "启动时和点「主页」按钮时打开的笔记，如：主页。留空则关闭",
+  buttons: "页面顶部按钮", buttonsDesc: "显示在每个页面顶部。每行一个：命令 id | 图标 | 名称",
+  addButton: "添加命令", folderIcons: "文件夹图标", folderIconsDesc: "每行一个：文件夹路径 = emoji。笔记的图标写在 icon 属性里（emoji）。",
   actions: {
     continue: "续写", improve: "改进写作", grammar: "修正拼写和语法",
     shorter: "缩短", longer: "扩写", simplify: "简化语言",
@@ -86,6 +105,16 @@ const zh: typeof en = {
 };
 
 const t = getLanguage().startsWith("zh") ? zh : en;
+
+const DEFAULTS: Settings = {
+  baseUrl: "https://api.deepseek.com",
+  apiKey: "",
+  model: "deepseek-flash",
+  maxChars: 12000,
+  homepage: "",
+  buttons: `notewise-ai:open-homepage | home | ${t.home}\ndaily-notes | calendar-check | ${t.today}\nnotewise-ai:quick-log | sparkles | ${t.quickLog}`,
+  folderIcons: "",
+};
 
 type ActionId = keyof typeof en.actions;
 interface Action {
@@ -131,8 +160,11 @@ interface Host {
     dataManager?: { data: { settings: { singleLineCardSeparator?: string; flashcardTags?: string[] } } };
   } | undefined> };
   internalPlugins: { getPluginById(id: string): { enabled: boolean; instance: { options: { folder?: string; format?: string; template?: string } } } | null };
-  commands: { executeCommandById(id: string): boolean };
+  commands: { executeCommandById(id: string): boolean; listCommands(): Command[] };
 }
+
+const KANBAN = "notewise-kanban";
+const CALENDAR = "notewise-calendar";
 
 // 记录目标：日记文件夹或 Templater 文件夹模板，字段取自模板的 frontmatter
 interface Target { folder: string; format: string; daily: boolean; template: TFile | null; fields: Record<string, unknown> }
@@ -140,6 +172,10 @@ type Log = Record<string, Record<string, unknown>>;
 
 export default class NoteWise extends Plugin {
   settings!: Settings;
+  private buttonEls: HTMLElement[] = [];
+  private buttoned = new WeakSet<ItemView>();
+  private observed = new WeakSet<HTMLElement>();
+  refreshIcons = debounce(() => this.decorateIcons(), 100, true);
 
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData() as Partial<Settings>);
@@ -164,6 +200,137 @@ export default class NoteWise extends Plugin {
       menu.addItem((i) => i.setTitle(t.askAI).setIcon("sparkles").setSection("action")
         .onClick(() => this.askAI(view.editor)));
     }));
+
+    // 工作流：主页、页面顶部按钮、图标、看板、列表移动、表格、中英文空格、日历
+    this.addCommand({ id: "open-homepage", name: t.openHome, icon: "home", callback: () => this.run(() => this.openHomepage()) });
+    this.addCommand({ id: "move-item-up", name: t.moveUp, icon: "arrow-up", editorCallback: (e) => moveItem(e, -1) });
+    this.addCommand({ id: "move-item-down", name: t.moveDown, icon: "arrow-down", editorCallback: (e) => moveItem(e, 1) });
+    this.addCommand({ id: "format-table", name: t.formatTable, icon: "table", editorCallback: (e) => tableCommand(e, false) });
+    this.addCommand({ id: "insert-row", name: t.insertRow, icon: "between-horizontal-end", editorCallback: (e) => tableCommand(e, true) });
+    this.addCommand({ id: "space-cjk", name: t.spaceCJK, icon: "space", editorCallback: (e) => spaceEditor(e) });
+    this.addCommand({ id: "open-calendar", name: t.openCalendar, icon: "calendar", callback: () => void this.openCalendar() });
+    this.addRibbonIcon("calendar", t.openCalendar, () => void this.openCalendar());
+    this.registerView(CALENDAR, (leaf) => new CalendarView(leaf, this));
+    this.registerBasesView(KANBAN, {
+      name: t.kanban, icon: "square-kanban", factory: (c, el) => new KanbanView(c, el),
+      options: () => [
+        { type: "property", key: "column", displayName: t.kanbanColumn, default: `note.${t.statusProp}`, filter: (p) => p.startsWith("note.") },
+        { type: "text", key: "columns", displayName: t.kanbanColumns, default: t.colDefault },
+      ],
+    });
+    this.app.workspace.onLayoutReady(() => {
+      this.refreshButtons();
+      this.decorateIcons();
+      if (this.settings.homepage) void this.run(() => this.openHomepage());
+    });
+    this.registerEvent(this.app.workspace.on("layout-change", () => { this.refreshButtons(); this.refreshIcons(); }));
+    this.registerEvent(this.app.metadataCache.on("changed", () => this.refreshIcons()));
+    this.registerEvent(this.app.vault.on("rename", () => this.refreshIcons()));
+    this.register(() => {
+      for (const b of this.buttonEls) b.remove();
+      activeDocument.querySelectorAll<HTMLElement>("[data-notewise-icon]").forEach((x) => setIconAttr(x, ""));
+    });
+  }
+
+  // 主页开在主编辑区：安卓上 getLeaf(false) 可能拿到侧边抽屉里的面板
+  mainLeaf(): WorkspaceLeaf {
+    const ws = this.app.workspace;
+    return ws.getMostRecentLeaf(ws.rootSplit) ?? ws.getLeaf(true);
+  }
+
+  async openHomepage() {
+    const f = this.settings.homepage && this.app.metadataCache.getFirstLinkpathDest(this.settings.homepage, "");
+    if (!f) throw new Error(t.noHome);
+    const leaf = this.mainLeaf();
+    await leaf.openFile(f);
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
+  }
+
+  refreshButtons(reset = false) {
+    if (reset) {
+      for (const b of this.buttonEls) b.remove();
+      this.buttonEls = [];
+      this.buttoned = new WeakSet();
+    }
+    const buttons = parseButtons(this.settings.buttons).reverse();
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      const v = leaf.view;
+      if (!(v instanceof ItemView) || this.buttoned.has(v)) return;
+      this.buttoned.add(v);
+      // addAction 往最前面插，倒着加出来才是设置里的顺序
+      for (const b of buttons) {
+        this.buttonEls.push(v.addAction(b.icon, b.name, () => { this.host().commands.executeCommandById(b.id); }));
+      }
+    });
+  }
+
+  // 图标写成 data 属性，样式表里用 ::before 显示；文件列表会按需重建条目，所以盯着它的 DOM 变化
+  decorateIcons() {
+    const folders = parseIcons(this.settings.folderIcons);
+    const iconOf = (path = "") => {
+      const f = this.app.vault.getAbstractFileByPath(path);
+      if (!(f instanceof TFile)) return folders[path] ?? "";
+      const v: unknown = this.app.metadataCache.getFileCache(f)?.frontmatter?.icon;
+      return typeof v === "string" ? v : "";
+    };
+    for (const leaf of this.app.workspace.getLeavesOfType("file-explorer")) {
+      const root = leaf.view.containerEl;
+      root.querySelectorAll<HTMLElement>(".nav-file-title[data-path], .nav-folder-title[data-path]").forEach((el) =>
+        setIconAttr(el.querySelector(".nav-file-title-content, .nav-folder-title-content"), iconOf(el.dataset.path)));
+      if (!this.observed.has(root)) {
+        this.observed.add(root);
+        const mo = new MutationObserver(() => this.refreshIcons());
+        mo.observe(root, { childList: true, subtree: true });
+        this.register(() => mo.disconnect());
+      }
+    }
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const v = leaf.view;
+      if (v instanceof MarkdownView && v.file) setIconAttr(v.containerEl.querySelector(".inline-title"), iconOf(v.file.path));
+    }
+  }
+
+  dailyOptions() {
+    const d = this.host().internalPlugins.getPluginById("daily-notes");
+    return (d?.enabled && d.instance.options) || {};
+  }
+
+  dailyPath(d: Moment) {
+    const o = this.dailyOptions();
+    return normalizePath(`${o.folder ?? ""}/${d.format(o.format || "YYYY-MM-DD")}.md`);
+  }
+
+  // 日历点日期：有就打开，没有就确认后按日记模板新建（和日记核心插件一样替换 {{date}} {{title}} {{time}}）
+  async openDaily(d: Moment) {
+    const path = this.dailyPath(d);
+    let f = this.app.vault.getAbstractFileByPath(path);
+    if (!(f instanceof TFile)) {
+      if (!await confirm(this.app, `${t.createDaily}${d.format("YYYY-MM-DD")}?`)) return;
+      const o = this.dailyOptions();
+      const tpl = o.template ? this.app.metadataCache.getFirstLinkpathDest(o.template, "") : null;
+      const raw = tpl ? await this.app.vault.read(tpl) : "";
+      const title = d.format(o.format || "YYYY-MM-DD");
+      const text = raw.replace(/{{\s*(date|title|time)\s*(?::(.*?))?}}/gi, (_m, k: string, fmt?: string) =>
+        k.toLowerCase() === "time" ? day().format(fmt || "HH:mm") : k.toLowerCase() === "title" ? title : d.format(fmt || o.format || "YYYY-MM-DD"));
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
+      f = await this.createNote(path, text);
+    }
+    if (!(f instanceof TFile)) return;
+    await this.mainLeaf().openFile(f);
+    if (Platform.isPhone) this.app.workspace.rightSplit.collapse();
+  }
+
+  async openCalendar() {
+    const ws = this.app.workspace;
+    let leaf = ws.getLeavesOfType(CALENDAR)[0];
+    if (!leaf) {
+      const right = ws.getRightLeaf(false);
+      if (!right) return;
+      await right.setViewState({ type: CALENDAR, active: true });
+      leaf = right;
+    }
+    await ws.revealLeaf(leaf);
   }
 
   async saveSettings() { await this.saveData(this.settings); }
@@ -511,6 +678,270 @@ export function pickLog<T extends { folder: string; fields: Record<string, unkno
   }).filter((x) => Object.keys(x.values).length);
 }
 
+export function parseButtons(text: string) {
+  return text.split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((x) => x[0])
+    .map(([id, icon, name]) => ({ id, icon: icon || "terminal", name: name || id }));
+}
+
+export function parseIcons(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const l of text.split("\n")) {
+    const i = l.lastIndexOf("=");
+    if (i > 0 && l.slice(i + 1).trim()) out[normalizePath(l.slice(0, i).trim())] = l.slice(i + 1).trim();
+  }
+  return out;
+}
+
+function setIconAttr(el: Element | null, icon: string) {
+  if (!(el instanceof HTMLElement)) return;
+  if (icon) el.dataset.notewiseIcon = icon;
+  else delete el.dataset.notewiseIcon;
+}
+
+const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s/;
+const indentOf = (s: string) => /^\s*/.exec(s)?.[0].length ?? 0;
+
+// 把光标所在列表项（连同子项）和上/下一个同级项互换；返回要替换的行范围、新内容和光标新行号
+export function moveListItem(lines: string[], line: number, dir: -1 | 1) {
+  let start = line;
+  while (start >= 0 && !LIST_ITEM.test(lines[start])) {
+    if (!lines[start].trim()) return null;
+    start--;
+  }
+  if (start < 0) return null;
+  const ind = indentOf(lines[start]);
+  const endOf = (s: number) => {
+    let e = s;
+    while (e + 1 < lines.length && lines[e + 1].trim() && indentOf(lines[e + 1]) > ind) e++;
+    return e;
+  };
+  const sibling = (n: number) => n >= 0 && n < lines.length && LIST_ITEM.test(lines[n]) && indentOf(lines[n]) === ind;
+  let a: number, b: number, c: number, d: number;
+  if (dir < 0) {
+    let p = start - 1;
+    while (p >= 0 && lines[p].trim() && indentOf(lines[p]) > ind) p--;
+    if (!sibling(p)) return null;
+    [a, b, c, d] = [p, start - 1, start, endOf(start)];
+  } else {
+    const n = endOf(start) + 1;
+    if (!sibling(n)) return null;
+    [a, b, c, d] = [start, n - 1, n, endOf(n)];
+  }
+  const text = [...lines.slice(c, d + 1), ...lines.slice(a, b + 1)];
+  return { from: a, to: d, text, line: line + (dir < 0 ? a - c : d - b) };
+}
+
+function moveItem(editor: Editor, dir: -1 | 1) {
+  const cur = editor.getCursor();
+  const lines = editor.getValue().split("\n");
+  const r = moveListItem(lines, cur.line, dir);
+  if (!r) return;
+  editor.transaction({
+    changes: [{ from: { line: r.from, ch: 0 }, to: { line: r.to, ch: lines[r.to].length }, text: r.text.join("\n") }],
+    selection: { from: { line: r.line, ch: cur.ch } },
+  });
+}
+
+// 中日韩文字和全角符号按 2 个宽度算，表格才对得齐
+const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{1f300}-\u{1faff}]/u;
+const widthOf = (s: string) => [...s].reduce((n, ch) => n + (WIDE.test(ch) ? 2 : 1), 0);
+
+function splitRow(row: string) {
+  let s = row.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  const cells: string[] = [];
+  let cur = "";
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "\\" && s[i + 1] === "|") { cur += "\\|"; i++; }
+    else if (s[i] === "|") { cells.push(cur.trim()); cur = ""; }
+    else cur += s[i];
+  }
+  if (cur.trim() || cells.length) cells.push(cur.trim());
+  return cells;
+}
+
+export function formatTable(rows: string[]) {
+  const cells = rows.map(splitRow);
+  const isSep = (c: string[]) => c.length > 0 && c.every((x) => /^:?-+:?$/.test(x));
+  const n = Math.max(...cells.map((c) => c.length));
+  const w = Array.from({ length: n }, (_, i) =>
+    Math.max(3, ...cells.filter((c) => !isSep(c)).map((c) => widthOf(c[i] ?? ""))));
+  return cells.map((c) => "| " + w.map((wi, i) => {
+    const x = c[i] ?? "";
+    if (!isSep(c)) return x + " ".repeat(wi - widthOf(x));
+    return (x.startsWith(":") ? ":" : "-") + "-".repeat(wi - 2) + (x.length > 1 && x.endsWith(":") ? ":" : "-");
+  }).join(" | ") + " |");
+}
+
+function tableCommand(editor: Editor, addRow: boolean) {
+  const cur = editor.getCursor();
+  const isRow = (n: number) => n >= 0 && n < editor.lineCount() && editor.getLine(n).trim().startsWith("|");
+  if (!isRow(cur.line)) return void new Notice(t.notInTable);
+  let a = cur.line, b = cur.line;
+  while (isRow(a - 1)) a--;
+  while (isRow(b + 1)) b++;
+  const rows: string[] = [];
+  for (let i = a; i <= b; i++) rows.push(editor.getLine(i));
+  let at = cur.line - a;
+  // 在表头或分隔行上插入时，新行放到分隔行下面
+  if (addRow) { at = Math.max(at, 1) + 1; rows.splice(at, 0, "|"); }
+  const out = formatTable(rows);
+  editor.transaction({
+    changes: [{ from: { line: a, ch: 0 }, to: { line: b, ch: editor.getLine(b).length }, text: out.join("\n") }],
+    selection: { from: { line: a + at, ch: addRow ? 2 : Math.min(cur.ch, out[at].length) } },
+  });
+}
+
+const CJK = "⺀-⿿぀-ヿ㐀-䶿一-鿿豈-﫿";
+const CJK_LATIN = new RegExp(`([${CJK}])([A-Za-z0-9])`, "g");
+const LATIN_CJK = new RegExp(`([A-Za-z0-9])([${CJK}])`, "g");
+// 跳过 frontmatter、代码、双链、链接地址和网址，免得改坏属性名和链接目标
+const PROTECTED = /^---\n[\s\S]*?\n---(?:\n|$)|```[\s\S]*?```|`[^`\n]*`|\[\[[^\]]*\]\]|\]\([^)]*\)|https?:\/\/\S+/g;
+
+export function spaceCJK(s: string) {
+  const fix = (x: string) => x.replace(CJK_LATIN, "$1 $2").replace(LATIN_CJK, "$1 $2");
+  let out = "", last = 0;
+  for (const m of s.matchAll(PROTECTED)) {
+    out += fix(s.slice(last, m.index)) + m[0];
+    last = m.index + m[0].length;
+  }
+  return out + fix(s.slice(last));
+}
+
+function spaceEditor(editor: Editor) {
+  if (editor.somethingSelected()) return editor.replaceSelection(spaceCJK(editor.getSelection()));
+  const before = editor.getValue(), after = spaceCJK(before);
+  if (after === before) return;
+  const c = editor.getCursor();
+  editor.setValue(after);
+  editor.setCursor(c);
+}
+
+// Bases 看板视图：按一个笔记属性分列，拖动卡片（手机上用卡片的 ⋯ 菜单）就改这个属性
+class KanbanView extends BasesView {
+  type = KANBAN;
+
+  constructor(controller: QueryController, private el: HTMLElement) { super(controller); }
+
+  onDataUpdated() {
+    const el = this.el;
+    el.empty();
+    el.addClass("notewise-kanban");
+    const prop = this.config.getAsPropertyId("column") ?? (`note.${t.statusProp}` as const);
+    if (!prop.startsWith("note.")) return void el.createEl("p", { text: t.kanbanNeedProp });
+    const name = parsePropertyId(prop).name;
+    const configured = this.config.get("columns");
+    const cols = (typeof configured === "string" ? configured : t.colDefault).split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+    const groups = new Map<string, BasesEntry[]>([["", []], ...cols.map((c): [string, BasesEntry[]] => [c, []])]);
+    for (const e of this.data.data) {
+      const v = e.getValue(prop);
+      const k = v?.isTruthy() ? v.toString() : "";
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k)?.push(e);
+    }
+    if (!groups.get("")?.length) groups.delete("");
+    const shown = this.config.getOrder().filter((p) => p !== prop && p !== "file.name");
+    const keys = [...groups.keys()];
+    for (const [col, entries] of groups) {
+      const colEl = el.createDiv({ cls: "notewise-col" });
+      colEl.createDiv({ cls: "notewise-col-head", text: `${col || t.kanbanNone} · ${entries.length}` });
+      colEl.addEventListener("dragover", (ev) => { ev.preventDefault(); colEl.addClass("is-over"); });
+      colEl.addEventListener("dragleave", () => colEl.removeClass("is-over"));
+      colEl.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        colEl.removeClass("is-over");
+        const f = this.app.vault.getAbstractFileByPath(ev.dataTransfer?.getData("text/plain") ?? "");
+        if (f instanceof TFile) void this.move(f, name, col);
+      });
+      for (const e of entries) {
+        const card = colEl.createDiv({ cls: "notewise-card", attr: { draggable: "true" } });
+        card.addEventListener("dragstart", (ev) => ev.dataTransfer?.setData("text/plain", e.file.path));
+        const head = card.createDiv({ cls: "notewise-card-head" });
+        head.createSpan({ cls: "notewise-card-title", text: e.file.basename })
+          .addEventListener("click", () => void this.app.workspace.openLinkText(e.file.path, "", false));
+        const more = head.createSpan({ cls: "notewise-card-move clickable-icon", attr: { "aria-label": t.moveCardTo } });
+        setIcon(more, "more-horizontal");
+        more.addEventListener("click", (ev) => {
+          const menu = new Menu();
+          for (const k of keys) {
+            if (k !== col) menu.addItem((i) => i.setTitle(`${t.moveCardTo} ${k || t.kanbanNone}`).onClick(() => void this.move(e.file, name, k)));
+          }
+          menu.showAtMouseEvent(ev);
+        });
+        for (const p of shown) {
+          const v = e.getValue(p);
+          if (v?.isTruthy()) card.createDiv({ cls: "notewise-card-prop", text: `${this.config.getDisplayName(p)}: ${v.toString()}` });
+        }
+      }
+      colEl.createDiv({ cls: "notewise-col-add", text: `+ ${t.newCard}` }).addEventListener("click", () =>
+        void this.createFileForView(undefined, (fm: Record<string, unknown>) => { if (col) fm[name] = col; }));
+    }
+  }
+
+  async move(file: TFile, name: string, col: string) {
+    await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+      if (col) fm[name] = col;
+      else delete fm[name];
+    });
+  }
+}
+
+// 侧栏月历：有日记的日期带圆点，点日期打开或新建那天的日记
+class CalendarView extends ItemView {
+  private month = day().startOf("month");
+
+  constructor(leaf: WorkspaceLeaf, private plugin: NoteWise) { super(leaf); }
+  getViewType() { return CALENDAR; }
+  getDisplayText() { return t.calendar; }
+  getIcon() { return "calendar"; }
+
+  async onOpen() {
+    this.render();
+    const rerender = () => this.render();
+    this.registerEvent(this.app.vault.on("create", rerender));
+    this.registerEvent(this.app.vault.on("delete", rerender));
+    this.registerEvent(this.app.vault.on("rename", rerender));
+    // 跨过零点后「今天」要跟着变
+    this.registerInterval(window.setInterval(rerender, 10 * 60 * 1000));
+  }
+
+  render() {
+    const el = this.contentEl;
+    el.empty();
+    el.addClass("notewise-calendar");
+    const head = el.createDiv({ cls: "notewise-cal-head" });
+    const nav = (icon: string, label: string, fn: () => void) => {
+      const b = head.createEl("button", { cls: "clickable-icon", attr: { "aria-label": label } });
+      setIcon(b, icon);
+      b.addEventListener("click", () => { fn(); this.render(); });
+    };
+    nav("chevron-left", "-1", () => { this.month = this.month.clone().subtract(1, "month"); });
+    head.createSpan({ cls: "notewise-cal-title", text: this.month.format("YYYY-MM") });
+    nav("chevron-right", "+1", () => { this.month = this.month.clone().add(1, "month"); });
+    nav("calendar-check", t.today, () => { this.month = day().startOf("month"); });
+    const grid = el.createDiv({ cls: "notewise-cal-grid" });
+    const start = this.month.clone().startOf("week");
+    for (let i = 0; i < 7; i++) grid.createDiv({ cls: "notewise-cal-dow", text: start.clone().add(i, "days").format("dd") });
+    const today = day();
+    for (let i = 0; i < 42; i++) {
+      const d = start.clone().add(i, "days");
+      const cell = grid.createDiv({ cls: "notewise-cal-day", text: String(d.date()) });
+      if (d.month() !== this.month.month()) cell.addClass("is-other");
+      if (d.isSame(today, "day")) cell.addClass("is-today");
+      if (this.app.vault.getAbstractFileByPath(this.plugin.dailyPath(d))) cell.addClass("has-note");
+      cell.addEventListener("click", () => void this.plugin.run(() => this.plugin.openDaily(d)));
+    }
+  }
+}
+
+class CommandPicker extends FuzzySuggestModal<Command> {
+  constructor(app: App, private commands: Command[], private onPick: (c: Command) => void) { super(app); }
+  getItems() { return this.commands; }
+  getItemText(c: Command) { return c.name; }
+  onChooseItem(c: Command) { this.onPick(c); }
+}
+
 class ActionPicker extends FuzzySuggestModal<Action> {
   constructor(app: App, private onPick: (a: Action) => Promise<void>) {
     super(app);
@@ -638,5 +1069,28 @@ class NoteWiseSettingTab extends PluginSettingTab {
       this.plugin.run(async () => {
         new Notice(t.testOk + await this.plugin.chat([{ role: "user", content: "Reply with: OK" }]));
       })));
+
+    new Setting(el).setName(t.workflow).setHeading();
+    new Setting(el).setName(t.homepage).setDesc(t.homepageDesc).addText((x) =>
+      x.setValue(s.homepage).onChange(async (v) => { s.homepage = v.trim(); await this.plugin.saveSettings(); }));
+    const area = (name: string, desc: string, key: "buttons" | "folderIcons", after: () => void) => {
+      let input!: TextAreaComponent;
+      const setting = new Setting(el).setName(name).setDesc(desc).addTextArea((x) => {
+        input = x;
+        x.inputEl.rows = 5;
+        x.inputEl.addClass("notewise-setting-area");
+        x.setValue(s[key]).onChange(async (v) => { s[key] = v; await this.plugin.saveSettings(); after(); });
+      });
+      return { setting, input };
+    };
+    const buttons = area(t.buttons, t.buttonsDesc, "buttons", () => this.plugin.refreshButtons(true));
+    buttons.setting.addButton((b) => b.setButtonText(t.addButton).onClick(() => {
+      new CommandPicker(this.app, this.plugin.host().commands.listCommands(), (c) => {
+        s.buttons = `${s.buttons.trimEnd()}\n${c.id} | ${c.icon ?? "terminal"} | ${c.name}`.trimStart();
+        buttons.input.setValue(s.buttons);
+        void this.plugin.saveSettings().then(() => this.plugin.refreshButtons(true));
+      }).open();
+    }));
+    area(t.folderIcons, t.folderIconsDesc, "folderIcons", () => this.plugin.refreshIcons());
   }
 }

@@ -33,6 +33,19 @@ Works on the selection, or the whole note when nothing is selected.
 - **Suggest folder and move note** — asks before moving; links are updated.
 - **Suggest related note links** — appends a "Related notes" list.
 
+**Workflow** (Notion-style basics, so you need fewer plugins; desktop and mobile)
+
+- **Homepage** — opens a chosen note on startup; "Open homepage" command.
+- **Header buttons** — any commands as buttons at the top of every page (default: Home, Today, Quick log).
+- **Icons** — an `icon` property (emoji) shows before a note's name in the file list and its title; folder icons are set in settings (`path = emoji`).
+- **Kanban view for Bases** — pick "Kanban" in a `.base`; columns come from a note property (default `status`), drag cards (or use a card's ⋯ menu on mobile) to change it, "+ New card" creates a note in that column.
+- **Move list item up / down** — moves the item with its children; add them to the mobile toolbar.
+- **Format table / Insert table row** — aligns Markdown tables (CJK-width aware).
+- **Add spaces between Chinese and English** — skips properties, code, links and URLs.
+- **Calendar** — month view in the sidebar; dots mark days with a daily note, click a day to open or create it.
+
+Requires Obsidian 1.10.2+ (Bases view API).
+
 The UI follows Obsidian's language (Chinese or English).
 
 ## Setup
@@ -76,6 +89,8 @@ Release: bump `version` in `manifest.json`, `package.json` and `versions.json`, 
 - **生成闪卡**（问 AI 里的动作）：把选中内容转成闪卡，分隔符和标签跟随闪卡插件设置；「插入并复习」直接开始复习。
 
 **笔记管理**：向知识库提问（带 `[[链接]]` 引用，可存成笔记）、总结写入 `summary` 属性、自动打标签（优先复用已有标签）、建议归档文件夹（确认后移动，自动更新链接）、推荐相关笔记链接。
+
+**工作流**（Notion 式的常用功能，少装几个插件；电脑和手机都能用）：启动时打开主页；每个页面顶部的命令按钮（默认：主页、今天、快速记录）；笔记 `icon` 属性（emoji）和文件夹图标显示在文件列表和标题前；Bases 的「看板」视图（按笔记属性分列，默认「状态」，拖动卡片或用卡片的 ⋯ 菜单改列）；列表项连同子项上移/下移；表格对齐和插入行；中英文之间加空格（跳过属性、代码、链接）；侧栏月历（有日记的日期带圆点，点日期打开或新建）。需要 Obsidian 1.10.2 及以上。
 
 **设置**：设置 → NoteWise AI 填写 API Key，点「测试连接」。默认接口 `https://api.deepseek.com`，模型 `deepseek-flash`。
 
