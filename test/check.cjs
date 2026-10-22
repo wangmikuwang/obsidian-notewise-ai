@@ -1,8 +1,14 @@
 const assert = require("assert");
 const obsidian = require("obsidian");
 obsidian.requestUrl = async (r) => { globalThis.lastReq = r; return { status: 200, text: "", json: { choices: [{ message: { content: ' ["a","b"] ' } }] } }; };
-const { default: NoteWise, parseJSON, pickLog, moveListItem, formatTable, spaceCJK, parseButtons, parseIcons } = require("./main.js");
+const { default: NoteWise, parseJSON, pickLog, pickLogByDate, moveListItem, formatTable, spaceCJK, parseButtons, parseIcons } = require("./main.js");
 (async () => {
+  // AI 按日期分组；旧格式和未写日期的都记到今天，非法日期键当作文件夹名被忽略
+  const tg = [{ folder: "日记", fields: { 空腹血糖: null, 早睡: false } }, { folder: "体脂", fields: { 体重: null } }];
+  assert.deepStrictEqual(pickLogByDate({ "2026-10-21": { 日记: { 空腹血糖: 6.1 } }, "2026-10-22": { 日记: { 早睡: "true" }, 体脂: { 体重: 93 } } }, tg, "2026-10-22").map((x) => [x.date, x.target.folder, x.values]),
+    [["2026-10-21", "日记", { 空腹血糖: 6.1 }], ["2026-10-22", "日记", { 早睡: true }], ["2026-10-22", "体脂", { 体重: 93 }]]);
+  assert.deepStrictEqual(pickLogByDate({ 日记: { 空腹血糖: 5 } }, tg, "2026-10-22").map((x) => x.date), ["2026-10-22"]);
+  assert.deepStrictEqual(pickLogByDate({ "2026-13-40": { 日记: { 空腹血糖: 5 } } }, tg, "2026-10-22"), []);
   // 列表项连同子项一起和同级项互换
   const list = ["- a", "  - a1", "- b", "  - b1", "  - b2", "- c"];
   const apply = (r) => [...list.slice(0, r.from), ...r.text, ...list.slice(r.to + 1)];

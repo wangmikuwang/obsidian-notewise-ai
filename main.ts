@@ -43,7 +43,7 @@ const en = {
   quickLog: "Quick log with AI", quickLogPh: "e.g. fasting glucose 6.2, took morning meds, weight 94.0",
   review: "Review the last 7 days", noTargets: "No log folders found. Set up Daily notes or Templater folder templates first",
   nothingParsed: "Nothing to log was found", logTo: "Write these values?", logged: "Logged: ",
-  noRecent: "No notes from the last 7 days", dailyFail: "Daily note was not created", startReview: "Insert & review",
+  noRecent: "No notes from the last 7 days", startReview: "Insert & review",
   openHome: "Open homepage", noHome: "Set a homepage note in NoteWise settings first", today: "Today", home: "Home",
   moveUp: "Move list item up", moveDown: "Move list item down", formatTable: "Format table", insertRow: "Insert table row",
   notInTable: "Cursor is not in a table", spaceCJK: "Add spaces between Chinese and English",
@@ -83,7 +83,7 @@ const zh: typeof en = {
   quickLog: "AI 快速记录", quickLogPh: "如：空腹 6.2，二甲双胍早上吃了，体重 94.0",
   review: "AI 回顾最近 7 天", noTargets: "没找到记录文件夹，请先设置日记或 Templater 文件夹模板",
   nothingParsed: "没识别出要记录的内容", logTo: "写入这些数据？", logged: "已记录：",
-  noRecent: "最近 7 天没有记录", dailyFail: "日记没有建出来", startReview: "插入并复习",
+  noRecent: "最近 7 天没有记录", startReview: "插入并复习",
   openHome: "打开主页", noHome: "请先在 NoteWise 设置里填写主页笔记", today: "今天", home: "主页",
   moveUp: "列表项上移", moveDown: "列表项下移", formatTable: "格式化表格", insertRow: "表格插入一行",
   notInTable: "光标不在表格里", spaceCJK: "中英文之间加空格",
@@ -300,23 +300,29 @@ export default class NoteWise extends Plugin {
     return normalizePath(`${o.folder ?? ""}/${d.format(o.format || "YYYY-MM-DD")}.md`);
   }
 
-  // 日历点日期：有就打开，没有就确认后按日记模板新建（和日记核心插件一样替换 {{date}} {{title}} {{time}}）
-  async openDaily(d: Moment) {
+  // 按日记模板新建某一天的日记（和日记核心插件一样替换 {{date}} {{title}} {{time}}）
+  async createDaily(d: Moment) {
     const path = this.dailyPath(d);
-    let f = this.app.vault.getAbstractFileByPath(path);
-    if (!(f instanceof TFile)) {
+    const o = this.dailyOptions();
+    const tpl = o.template ? this.app.metadataCache.getFirstLinkpathDest(o.template, "") : null;
+    const raw = tpl ? await this.app.vault.read(tpl) : "";
+    const title = d.format(o.format || "YYYY-MM-DD");
+    const text = raw.replace(/{{\s*(date|title|time)\s*(?::(.*?))?}}/gi, (_m, k: string, fmt?: string) =>
+      k.toLowerCase() === "time" ? day().format(fmt || "HH:mm") : k.toLowerCase() === "title" ? title : d.format(fmt || o.format || "YYYY-MM-DD"));
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
+    return this.createNote(path, text);
+  }
+
+  // 日历点日期：有就打开，没有就确认后新建
+  async openDaily(d: Moment) {
+    const found = this.app.vault.getAbstractFileByPath(this.dailyPath(d));
+    let f: TFile;
+    if (found instanceof TFile) f = found;
+    else {
       if (!await confirm(this.app, `${t.createDaily}${d.format("YYYY-MM-DD")}?`)) return;
-      const o = this.dailyOptions();
-      const tpl = o.template ? this.app.metadataCache.getFirstLinkpathDest(o.template, "") : null;
-      const raw = tpl ? await this.app.vault.read(tpl) : "";
-      const title = d.format(o.format || "YYYY-MM-DD");
-      const text = raw.replace(/{{\s*(date|title|time)\s*(?::(.*?))?}}/gi, (_m, k: string, fmt?: string) =>
-        k.toLowerCase() === "time" ? day().format(fmt || "HH:mm") : k.toLowerCase() === "title" ? title : d.format(fmt || o.format || "YYYY-MM-DD"));
-      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-      if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
-      f = await this.createNote(path, text);
+      f = await this.createDaily(d);
     }
-    if (!(f instanceof TFile)) return;
     await this.mainLeaf().openFile(f);
     if (Platform.isPhone) this.app.workspace.rightSplit.collapse();
   }
@@ -494,30 +500,20 @@ export default class NoteWise extends Plugin {
     return out;
   }
 
-  todayPath(x: Target) { return normalizePath(`${x.folder}/${day().format(x.format)}.md`); }
+  notePath(x: Target, date: string) { return normalizePath(`${x.folder}/${day(date, "YYYY-MM-DD").format(x.format)}.md`); }
 
-  // 今天的笔记不存在就交给原插件新建，模板照常套上
-  async todayNote(x: Target): Promise<TFile> {
-    const path = this.todayPath(x);
-    const found = this.app.vault.getAbstractFileByPath(path);
+  // 那天的笔记不存在就按模板新建：日记用日记模板，其余交给 Templater，模板照常套上
+  async noteFor(x: Target, date: string): Promise<TFile> {
+    const d = day(date, "YYYY-MM-DD");
+    const found = this.app.vault.getAbstractFileByPath(this.notePath(x, date));
     if (found instanceof TFile) return found;
-    if (x.daily) {
-      // ponytail: 只等文件建好；日记模板若还要被 Templater 二次处理，可能和写属性抢先后
-      const created = new Promise<TFile>((resolve, reject) => {
-        const ref = this.app.vault.on("create", (f) => {
-          if (f.path === path && f instanceof TFile) { this.app.vault.offref(ref); resolve(f); }
-        });
-        window.setTimeout(() => { this.app.vault.offref(ref); reject(new Error(t.dailyFail)); }, 5000);
-      });
-      this.host().commands.executeCommandById("daily-notes");
-      return created;
-    }
+    if (x.daily) return this.createDaily(d);
     if (!this.app.vault.getAbstractFileByPath(x.folder)) await this.app.vault.createFolder(x.folder);
     const folder = this.app.vault.getAbstractFileByPath(x.folder);
     const tp = this.host().plugins.plugins["templater-obsidian"]?.templater;
     const f = tp && x.template && folder instanceof TFolder
-      ? await tp.create_new_note_from_template(x.template, folder, day().format(x.format), false) : undefined;
-    return f ?? this.app.vault.create(path, x.template ? await this.app.vault.read(x.template) : "");
+      ? await tp.create_new_note_from_template(x.template, folder, d.format(x.format), false) : undefined;
+    return f ?? this.createNote(this.notePath(x, date), x.template ? await this.app.vault.read(x.template) : "");
   }
 
   // Templater 开了「新建文件时触发」会重新解析新文件，在安卓上会把内容清空；先登记成它的待处理文件，让它跳过
@@ -538,17 +534,18 @@ export default class NoteWise extends Plugin {
     const text = await prompt(this.app, t.quickLog, t.quickLogPh);
     if (!text) return;
     const schema = Object.fromEntries(targets.map((x) => [x.folder, x.fields]));
+    const today = day().format("YYYY-MM-DD");
     const reply = await this.chat([
-      { role: "system", content: 'Turn the user\'s log into note properties. The schema maps folder -> {field: template default}. Output only JSON {"folder": {"field": value}} with exact folder and field names, only for things the user clearly mentioned. Use true/false for fields whose default is a boolean, plain numbers for measurements, short text otherwise.' },
+      { role: "system", content: `Turn the user's log into note properties. Today is ${today} (${day().locale("en").format("dddd")}). The schema maps folder -> {field: template default}. Output only JSON {"YYYY-MM-DD": {"folder": {"field": value}}}: resolve relative or partial dates the user mentions (yesterday, the day before yesterday, "21号", last Monday...) to absolute dates, and use today's date for anything without a date. Use exact folder and field names, only for things the user clearly mentioned. Use true/false for fields whose default is a boolean, plain numbers for measurements, short text otherwise.` },
       { role: "user", content: `Schema: ${JSON.stringify(schema)}\n\nLog: ${text}` },
     ]);
-    const picked = pickLog(parseJSON<Log>(reply), targets);
+    const picked = pickLogByDate(parseJSON<Record<string, unknown>>(reply), targets, today);
     if (!picked.length) return void new Notice(t.nothingParsed);
-    const preview = picked.map(({ target, values }) => `📁 ${this.todayPath(target)}\n` +
+    const preview = picked.map(({ target, values, date }) => `📁 ${this.notePath(target, date)}\n` +
       Object.entries(values).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join("\n")).join("\n\n");
     if (!await confirm(this.app, `${t.logTo}\n\n${preview}`)) return;
-    for (const { target, values } of picked) {
-      const f = await this.todayNote(target);
+    for (const { target, values, date } of picked) {
+      const f = await this.noteFor(target, date);
       await this.app.fileManager.processFrontMatter(f, (fm: Record<string, unknown>) => { Object.assign(fm, values); });
     }
     new Notice(t.logged + picked.flatMap((x) => Object.keys(x.values)).join(", "));
@@ -676,6 +673,19 @@ export function pickLog<T extends { folder: string; fields: Record<string, unkno
     }
     return { target, values };
   }).filter((x) => Object.keys(x.values).length);
+}
+
+// AI 按日期分组返回 {"YYYY-MM-DD": {folder: {...}}}；旧格式（顶层直接是文件夹）算今天
+export function pickLogByDate<T extends { folder: string; fields: Record<string, unknown> }>(reply: Record<string, unknown>, targets: T[], today: string) {
+  const isDate = (k: string) => /^\d{4}-\d{2}-\d{2}$/.test(k) && !isNaN(Date.parse(k));
+  const byDate: Record<string, Log> = {};
+  for (const [k, v] of Object.entries(reply)) {
+    if (!v || typeof v !== "object") continue;
+    if (isDate(k)) byDate[k] = { ...byDate[k], ...(v as Log) };
+    else byDate[today] = { ...byDate[today], [k]: v as Record<string, unknown> };
+  }
+  return Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([date, log]) => pickLog(log, targets).map((x) => ({ ...x, date })));
 }
 
 export function parseButtons(text: string) {
